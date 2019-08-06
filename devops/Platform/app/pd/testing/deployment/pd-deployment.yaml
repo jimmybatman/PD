@@ -1,0 +1,38 @@
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  namespace: css-production-system
+  name: production_system_application
+spec:
+  replicas: 3
+  template:
+    metadata:
+      labels:
+        component: production_system_application
+    spec:
+      containers:
+      - name: production_system_application
+        image: Harbor_Registry/production_system/production_system_application/Environment:Tag
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 80
+        resources:
+          requests:
+            memory: "150Mi"
+            cpu: "1"
+          limits:
+            memory: "256Mi"
+            cpu: "2"
+      imagePullSecrets:
+      - name: harbor
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchExpressions:
+                  - key: "component"
+                    operator: In
+                    values:
+                    - production_system_application
+              topologyKey: "kubernetes.io/hostname"
+

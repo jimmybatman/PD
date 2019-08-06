@@ -1,0 +1,95 @@
+pipeline {
+  agent any
+  options {
+    disableConcurrentBuilds()
+  }
+  triggers {
+    pollSCM('* * * * *')
+  }
+  parameters {
+    choice(name: 'Environment', choices: ['develop'], description: '')
+    string(name: 'Email', defaultValue: 'jimmy@aishk.com', description: 'Comma separated list of emails for receiving notification.')
+    booleanParam(name: 'Build', defaultValue: true, description: '')
+  }
+  environment {
+    Harbor_Registry = 'hkdcvx-harbor.chowsangsang.com'
+    Tag = 'latest'
+    CONTEXT = "${env.Environment == 'release' ? 'hkdcvx-staging' : 'hkdcvx-testing'}"
+    DEPLOY_EVIRONMENT = "${env.Environment == 'release' ? 'STAGING-PKS' : 'TESTING-PKS'}"
+    config = "KUBECONFIG=/var/jenkins_home/workspace/kubectl_credentials/config-${CONTEXT}"
+  	token = "\$(cat /var/jenkins_home/workspace/kubectl_credentials/token-${CONTEXT})"
+  }
+  stages {
+    stage('Checkout') {
+      steps {
+        checkout([
+          $class: 'SubversionSCM',
+          additionalCredentials: [],
+          excludedCommitMessages: '',
+          excludedRegions: '',
+          excludedRevprop: '',
+          excludedUsers: '',
+          filterChangelog: false,
+          ignoreDirPropChanges: false,
+          includedRegions: '',
+          locations: [
+            [
+              cancelProcessOnExternalsFail: true,
+              credentialsId: 'svn.production_system',
+              depthOption: 'infinity',
+              ignoreExternalsOption: true,
+              local: 'microservice/pd',
+              remote: 'https://svn.chowsangsang.com/repos/vendors/production_system/microservice/pd/' + env.Environment
+            ]
+          ],
+          quietOperation: true,
+          workspaceUpdater: [$class: 'UpdateUpdater']
+        ])
+        withCredentials([usernamePassword(credentialsId: Harbor_Registry, usernameVariable: 'USERNAME', passwordVariable: 'PASSWORD')]) {
+          sh 'docker login -u "$USERNAME" -p "$PASSWORD" $Harbor_Registry'
+        }
+      }
+    }
+    stage('Build Microservice') {    
+      steps {
+        dir('microservice') {
+          script {
+            sh """
+              cd iv
+                docker build -t $Harbor_Registry/production_system/pd/\$Environment:$Tag .
+				docker push $Harbor_Registry/production_system/pd/\$Environment:$Tag
+				docker rmi $Harbor_Registry/production_system/pd/\$Environment:$Tag
+              """
+            }
+          }
+        }
+      }
+    }
+    stage('Deploy') {
+      steps {
+        withCredentials([usernamePassword(credentialsId: 'svn.production_system', passwordVariable: 'password', usernameVariable: 'username')]) {		    
+            sh """
+            svn co --username '$username' --password '$password' --force https://svn.chowsangsang.com/repos/vendors/production_system/devops/Platform/app/pd/testing/deployment deploymentYaml
+            """
+            }
+        sh "$config kubectl --token $token delete -f \${WORKSPACE}/deploymentYaml/pd-deployment.yaml || true"		
+        sh "cat \${WORKSPACE}/deploymentYaml/pd-deployment.yaml | sed 's/Harbor_Registry/\'${Harbor_Registry}'/' | sed 's/Environment/\'${env.Environment}'/' | sed 's/Tag/\'${Tag}'/' | sed 's/environment/\'${DEPLOY_EVIRONMENT}'/' | $config kubectl --token $token apply -f -"
+		sh 'docker image prune -f'
+		
+		
+      }
+    }
+  
+    stage('Test') {
+      steps {
+        echo 'Test'
+      }
+    }
+  }
+  
+  post {
+    always {
+      emailext body: "Build Cause: " + currentBuild.getBuildCauses()[0].shortDescription + "\nDuration: " + currentBuild.durationString.replace('and counting','') + "\nDetails: ${BUILD_URL}\nChanges since last build: " + currentBuild.changeSets.toString(), subject: "ENV=${env.Environment} " + currentBuild.fullProjectName + " Build #${BUILD_NUMBER} " + currentBuild.currentResult, to: "$Email"
+    }
+  }
+}
